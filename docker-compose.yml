@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  satje-scraper:
+    build: .
+    container_name: satje-scraper
+    restart: unless-stopped
+    ports:
+      - "3030:3030"
+    environment:
+      - PORT=3030
+      - NODE_ENV=production
+      - HEADLESS=true
+      - MAX_CONCURRENT_PAGES=2
+      - CAPTCHA_TIMEOUT=30000
+      - SATJE_PAGE_URL=https://procesosjudiciales.funcionjudicial.gob.ec/busqueda-filtros
+      - SATJE_API_BASE=https://api.funcionjudicial.gob.ec
+      - LOG_LEVEL=info
+      - LOG_FILE=logs/satje.log
+      # Descomenta y asigna para proteger los endpoints:
+      # - API_KEY=tu-clave-secreta
+    volumes:
+      - ./logs:/app/logs
+    shm_size: '1gb'
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3030/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
