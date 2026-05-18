@@ -6,9 +6,9 @@ services:
     container_name: satje-scraper
     restart: unless-stopped
     ports:
-      - "3030:3030"
+      - "3031:3031"
     environment:
-      - PORT=3030
+      - PORT=3031
       - NODE_ENV=production
       - HEADLESS=true
       - MAX_CONCURRENT_PAGES=2
@@ -23,7 +23,7 @@ services:
       - ./logs:/app/logs
     shm_size: '1gb'
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3030/ping"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:3031/ping"]
       interval: 30s
       timeout: 10s
       retries: 3

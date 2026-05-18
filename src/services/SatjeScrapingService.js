@@ -92,44 +92,209 @@ class SatjeScrapingService {
   }
 
   async _resolverRecaptcha(page) {
-    logger.info('Esperando iframe de reCAPTCHA...');
+    logger.info('Resolviendo reCAPTCHA...');
+
+    // Esperar iframe — confirma que el widget renderizó correctamente
     try {
-      // Esperar a que aparezca el iframe de reCAPTCHA
-      await page.waitForSelector('iframe[src*="recaptcha"]', { timeout: 30000 });
-      logger.info('reCAPTCHA detectado — haciendo clic en checkbox...');
+      await page.waitForSelector('iframe[src*="recaptcha"]', { timeout: 20000 });
+      logger.info('Iframe reCAPTCHA detectado');
+    } catch (_) {
+      logger.warn('Iframe reCAPTCHA no detectado en 20s — CAPTCHA no presente, continuando');
+      return;
+    }
 
-      await randomDelay(800, 1500);
+    // Pausa para que Angular termine de vincular los event listeners
+    await randomDelay(1200, 1800);
 
-      // Obtener el frame del reCAPTCHA y hacer clic en el checkbox
-      const frames = page.frames();
-      const recaptchaFrame = frames.find((f) => f.url().includes('recaptcha'));
-
-      if (recaptchaFrame) {
-        await recaptchaFrame.waitForSelector('#recaptcha-anchor', { timeout: 8000 });
-        await recaptchaFrame.click('#recaptcha-anchor');
-        logger.info('Checkbox reCAPTCHA clicado. Esperando verificación...');
-
-        try {
-          // Esperar a que el checkbox muestre aria-checked="true" (resuelto sin desafío)
-          await recaptchaFrame.waitForSelector('#recaptcha-anchor[aria-checked="true"]', { timeout: 10000 });
-          logger.info('reCAPTCHA resuelto automáticamente (checkbox checked) ✓');
-          await randomDelay(500, 1000);
-        } catch (_) {
-          // El desafío de imagen apareció — esperar más tiempo para resolución manual o servicio
-          logger.warn('reCAPTCHA requiere desafío de imagen. Esperando resolución (hasta 60s)...');
-          await randomDelay(55000, 60000);
+    // ── Intento 1: buscar en TODOS los elementos Angular el método resolvedCapcha ──
+    // El componente padre (no <re-captcha>) es quien tiene ese método.
+    const viaParent = await page.evaluate(() => {
+      for (const el of document.querySelectorAll('*')) {
+        const ctx = el.__ngContext__;
+        if (!ctx) continue;
+        const arr = Array.isArray(ctx) ? ctx : Object.values(ctx);
+        for (const item of arr) {
+          if (!item || typeof item !== 'object') continue;
+          for (const m of ['resolvedCapcha', 'resolvedCaptcha']) {
+            if (typeof item[m] === 'function') {
+              try { item[m]('verdad'); return el.tagName.toLowerCase() + '.' + m; } catch (_) {}
+            }
+          }
         }
-      } else {
-        // Intentar clic directo en el área visible del captcha
-        await page.click('iframe[src*="recaptcha"]');
-        logger.warn('Frame reCAPTCHA no accesible directamente, se hizo clic en el iframe.');
-        await randomDelay(3000, 5000);
+      }
+      return null;
+    });
+
+    if (viaParent) {
+      logger.info(`reCAPTCHA resuelto vía ${viaParent} ✓`);
+      await randomDelay(500, 900);
+      return;
+    }
+
+    // ── Intento 2: emitir en el EventEmitter de ReCaptchaComponent ──
+    // El componente <re-captcha> tiene resolved:EventEmitter — emitir
+    // dispara el binding (resolved)="resolvedCapcha($event)" del padre.
+    const viaEmit = await page.evaluate(() => {
+      const el = document.querySelector('re-captcha');
+      if (!el || !el.__ngContext__) return null;
+      const lview = el.__ngContext__;
+      // CONTEXT está en índice 7 (Angular 13+) u 8 (versiones anteriores)
+      for (const idx of [7, 8, 6, 9]) {
+        const comp = Array.isArray(lview) ? lview[idx] : null;
+        if (!comp || typeof comp !== 'object') continue;
+        if (comp.resolved && typeof comp.resolved.emit === 'function') {
+          try { comp.resolved.emit('verdad'); return 're-captcha.lview[' + idx + '].resolved.emit'; } catch (_) {}
+        }
+      }
+      return null;
+    });
+
+    if (viaEmit) {
+      logger.info(`reCAPTCHA resuelto vía ${viaEmit} ✓`);
+      await randomDelay(500, 900);
+      return;
+    }
+
+    // ── Intento 3: TODOS los callbacks en ___grecaptcha_cfg.clients ──
+    // El callback de ng-recaptcha tiene "zone.run" o "emit" en su source.
+    // Llamamos a TODOS los que encontremos para asegurar que el correcto dispare.
+    const viaCfg = await page.evaluate(() => {
+      const clients = window.___grecaptcha_cfg && window.___grecaptcha_cfg.clients;
+      if (!clients) return null;
+
+      const found = [];
+      function collect(obj, path, depth) {
+        if (depth > 5 || !obj || typeof obj !== 'object') return;
+        for (const k of Object.keys(obj)) {
+          try {
+            const v = obj[k];
+            if (k === 'callback' && typeof v === 'function') {
+              found.push({ path: path + '.callback', fn: v });
+            } else if (v && typeof v === 'object') {
+              collect(v, path + '.' + k, depth + 1);
+            }
+          } catch (_) {}
+        }
       }
 
-    } catch (err) {
-      logger.warn(`reCAPTCHA no apareció o ya fue resuelto: ${err.message}`);
-      // En algunos flujos el captcha no aparece — continuar esperando la interceptación
+      for (const [wid, client] of Object.entries(clients)) {
+        collect(client, wid, 0);
+      }
+
+      // Guardar sources para diagnóstico
+      window.__cbSources = found.map(f => ({ p: f.path, s: f.fn.toString().slice(0, 200) }));
+
+      // Llamar a TODOS — el de ng-recaptcha tiene zone.run/emit; los demás son inocuos
+      const called = [];
+      for (const { path, fn } of found) {
+        try { fn('verdad'); called.push(path); } catch (_) {}
+      }
+      return called.length ? called.join('|') : null;
+    });
+
+    if (viaCfg) logger.info(`cfg callbacks invocados: ${viaCfg}`);
+
+    // Log sources para identificar cuál es el callback de Angular
+    const cbSrc = await page.evaluate(() => JSON.stringify(window.__cbSources || []));
+    logger.info(`cb_sources: ${cbSrc}`);
+
+    // Esperar brevemente para dar tiempo a Angular a reaccionar
+    await randomDelay(1500, 2000);
+
+    // Diagnóstico de componentes Angular
+    const diag = await page.evaluate(() => {
+      let withCtx = 0;
+      const methods = new Set();
+      for (const el of document.querySelectorAll('*')) {
+        const ctx = el.__ngContext__;
+        if (!ctx) continue;
+        withCtx++;
+        const arr = Array.isArray(ctx) ? ctx : Object.values(ctx);
+        for (const item of arr) {
+          if (!item || typeof item !== 'object') continue;
+          for (const k of Object.getOwnPropertyNames(item)) {
+            if (typeof item[k] === 'function') methods.add(k);
+          }
+        }
+      }
+      return {
+        hasEl: !!document.querySelector('re-captcha'),
+        withCtx,
+        methodSample: [...methods].slice(0, 30),
+      };
+    });
+    logger.warn(`captcha_diag: ${JSON.stringify(diag)}`);
+  }
+
+  async _resolverConCapSolver(page) {
+    const axios = require('axios');
+    const apiKey = config.capsolver.apiKey;
+    const pageUrl = page.url();
+
+    // Obtener el sitekey del reCAPTCHA en la página
+    const sitekey = await page.evaluate(() => {
+      const el = document.querySelector('[data-sitekey]') ||
+                 document.querySelector('iframe[src*="recaptcha"]');
+      if (!el) return null;
+      if (el.dataset?.sitekey) return el.dataset.sitekey;
+      const m = (el.src || '').match(/[?&]k=([^&]+)/);
+      return m ? m[1] : null;
+    });
+
+    if (!sitekey) throw new Error('No se encontró sitekey de reCAPTCHA en la página');
+    logger.info(`CapSolver: sitekey=${sitekey}`);
+
+    // Crear tarea en CapSolver
+    const createRes = await axios.post('https://api.capsolver.com/createTask', {
+      clientKey: apiKey,
+      task: { type: 'ReCaptchaV2TaskProxyLess', websiteURL: pageUrl, websiteKey: sitekey },
+    });
+
+    if (createRes.data.errorId) {
+      throw new Error(`CapSolver createTask error: ${createRes.data.errorDescription}`);
     }
+
+    const taskId = createRes.data.taskId;
+    logger.info(`CapSolver tarea creada: ${taskId}`);
+
+    // Esperar solución (polling cada 3s, máx 2 minutos)
+    let token = null;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const pollRes = await axios.post('https://api.capsolver.com/getTaskResult', {
+        clientKey: apiKey,
+        taskId,
+      });
+      if (pollRes.data.status === 'ready') {
+        token = pollRes.data.solution?.gRecaptchaResponse;
+        break;
+      }
+      logger.debug(`CapSolver: esperando solución... intento ${i + 1}`);
+    }
+
+    if (!token) throw new Error('CapSolver: timeout esperando solución del CAPTCHA');
+    logger.info('CapSolver: token obtenido ✓ — inyectando en la página...');
+
+    // Inyectar el token y disparar el callback de reCAPTCHA que Angular escucha
+    await page.evaluate((t) => {
+      // Poner el token en el textarea oculto que reCAPTCHA usa
+      document.querySelectorAll('textarea[name="g-recaptcha-response"]')
+        .forEach((el) => { el.value = t; });
+
+      // Invocar el callback registrado en ___grecaptcha_cfg (usado por ng-recaptcha)
+      const cfg = window.___grecaptcha_cfg;
+      if (cfg && cfg.clients) {
+        Object.values(cfg.clients).forEach((client) => {
+          Object.values(client).forEach((widget) => {
+            if (widget && typeof widget.callback === 'function') widget.callback(t);
+            if (widget && widget.l && typeof widget.l.callback === 'function') widget.l.callback(t);
+          });
+        });
+      }
+    }, token);
+
+    logger.info('Token inyectado — Angular debería habilitar Buscar y disparar buscarCausas.');
+    await randomDelay(1000, 2000);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -227,11 +392,21 @@ class SatjeScrapingService {
 
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'satje-pdf-'));
     const page = await browserService.newPage();
-    
+
     page.setDefaultTimeout(60000);
-    
+
     try {
-      // Configurar CDP para capturar la descarga en tmpDir
+      // ── Escuchar buscarCausas ────────────────────────────────────
+      let resultadosListos = false;
+      page.on('response', (response) => {
+        try {
+          if (response.url().includes('buscarCausas') && response.request()?.method() === 'POST') {
+            resultadosListos = true;
+          }
+        } catch (_) {}
+      });
+
+      // ── CDP para capturar la descarga ───────────────────────────
       const client = await page.createCDPSession();
       await client.send('Browser.setDownloadBehavior', {
         behavior: 'allow',
@@ -244,35 +419,29 @@ class SatjeScrapingService {
         if (e.state === 'completed') downloadComplete = true;
       });
 
-      // ── Nivel 1: Buscar y pasar captcha ──────────────────────────
-      logger.info('PDF: navegando y buscando...');
-      await page.goto(config.satje.pageUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+      // ── Nivel 1: Navegar, llenar y buscar ───────────────────────
+      // domcontentloaded es suficiente: _llenarCampoCedula usa waitForSelector
+      // para esperar a que Angular renderice el formulario completo.
+      logger.info('PDF: navegando...');
+      await page.goto(config.satje.pageUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
       if (cedula) await this._llenarCampoCedula(page, cedula);
       else if (nombre) await this._llenarCampoNombre(page, nombre);
       else throw new Error('Se requiere cedula o nombre para descargar el PDF');
 
-      // Escuchar buscarCausas ANTES de resolver el captcha
-      let resultadosListos = false;
-      page.on('response', (response) => {
-        try {
-          if (response.url().includes('buscarCausas') && response.request()?.method() === 'POST') {
-            resultadosListos = true;
-          }
-        } catch (_) {}
-      });
-
       await this._clickBuscar(page);
+
+      // El reCAPTCHA v2 aparece después del clic en Buscar — ahora sí está en el DOM
       await this._resolverRecaptcha(page);
 
-      // Esperar confirmación de red antes de tocar el DOM
+      // Esperar confirmación de red (buscarCausas se dispara tras resolver el CAPTCHA)
       await new Promise((resolve, reject) => {
         const check = setInterval(() => {
           if (resultadosListos) { clearInterval(check); resolve(); }
         }, 300);
         setTimeout(() => { clearInterval(check); reject(new Error('Timeout esperando respuesta buscarCausas')); }, 45000);
       });
-      await randomDelay(1200, 2000); // Dar tiempo a Angular para renderizar
+      await randomDelay(1200, 2000);
 
       try {
         // Verificar si la respuesta devolvió 0 resultados o si cargó la tabla

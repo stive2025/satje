@@ -8,7 +8,7 @@ API REST que expone los procesos judiciales del [Sistema SATJE](https://procesos
 Cliente HTTP
     │
     ▼
-Express (puerto 3030)
+Express (puerto 3031)
     │
     ├── Niveles 1+2+3 (buscar, causas, proceso)
     │       └── SatjeHttpService  ──► api.funcionjudicial.gob.ec  (Axios)
@@ -37,19 +37,20 @@ npm start
 
 ```bash
 docker build -t satje-scraper .
-docker run -p 3030:3030 --env-file .env satje-scraper
+docker run -p 3031:3031 --env-file .env satje-scraper
 ```
 
 ## Variables de entorno
 
 | Variable | Default | Descripción |
 |---|---|---|
-| `PORT` | `3030` | Puerto del servidor Express |
+| `PORT` | `3031` | Puerto del servidor Express |
 | `NODE_ENV` | `production` | Entorno |
 | `API_KEY` | *(vacío)* | Clave para proteger los endpoints. Si se define, todos los requests (excepto `/ping`) deben incluir el header `x-api-key` o el query param `?api_key=` |
 | `HEADLESS` | `true` | `false` para abrir ventana visible de Chromium (solo en entornos con display) |
 | `MAX_CONCURRENT_PAGES` | `2` | Páginas Puppeteer simultáneas |
 | `CAPTCHA_TIMEOUT` | `120000` | Timeout en ms para el flujo de descarga de PDF |
+| `CAPSOLVER_API_KEY` | *(vacío)* | API key de [CapSolver](https://capsolver.com) para resolver automáticamente el desafío de imagen del reCAPTCHA en `/satje/pdf`. Sin esta clave el endpoint falla cuando reCAPTCHA presenta imagen challenge (~$0.80/1000 soluciones) |
 | `SATJE_PAGE_URL` | `https://procesosjudiciales.funcionjudicial.gob.ec/busqueda-filtros` | URL de la SPA del SATJE |
 | `SATJE_API_BASE` | `https://api.funcionjudicial.gob.ec` | Base URL de la API del SATJE |
 | `LOG_LEVEL` | `info` | Nivel de logging (`debug`, `info`, `warn`, `error`) |
@@ -145,10 +146,10 @@ Si se define `API_KEY` en `.env`, todos los endpoints (excepto `/ping`) requiere
 
 ```bash
 # Header
-curl -H "x-api-key: mi_clave" http://localhost:3030/satje/buscar?cedula=...
+curl -H "x-api-key: mi_clave" http://localhost:3031/satje/buscar?cedula=...
 
 # Query param
-curl http://localhost:3030/satje/buscar?cedula=...&api_key=mi_clave
+curl http://localhost:3031/satje/buscar?cedula=...&api_key=mi_clave
 ```
 
 ## Logs
