@@ -27,9 +27,9 @@ COPY src/ ./src/
 
 RUN mkdir -p logs
 
-EXPOSE 3030
+EXPOSE 3031
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD wget -qO- http://localhost:3030/ping || exit 1
+    CMD wget -qO- http://localhost:3031/ping || exit 1
 
 CMD ["node", "src/index.js"]

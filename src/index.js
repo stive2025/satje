@@ -5,7 +5,7 @@ const logger = require('./utils/logger');
 
 const app = createApp();
 
-const server = app.listen(config.server.port, () => {
+const server = app.listen(config.server.port, '0.0.0.0', () => {
   logger.info(`satje-scraper iniciado en puerto ${config.server.port} [${config.server.nodeEnv}]`);
   logger.info(`API SATJE base: ${config.satje.apiBase}`);
 });
