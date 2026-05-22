@@ -1,4 +1,5 @@
 const express = require('express');
+const cors = require('cors');
 const config = require('./config');
 const logger = require('./utils/logger');
 const routes = require('./routes/satje.routes');
@@ -6,6 +7,9 @@ const routes = require('./routes/satje.routes');
 function createApp() {
   const app = express();
 
+  app.use(cors({
+    origin: 'http://172.20.1.105'
+  }));
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
