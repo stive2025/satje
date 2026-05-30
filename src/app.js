@@ -8,7 +8,7 @@ function createApp() {
   const app = express();
 
   app.use(cors({
-    origin: 'http://172.20.1.105'
+    origin: 'http://172.20.1.105',
   }));
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
